@@ -1,0 +1,5 @@
+treelib
+rich
+python-dotenv
+tqdm
+ijson

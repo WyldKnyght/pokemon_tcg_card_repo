@@ -1,0 +1,841 @@
+m:\dev_env\pokemon_tcg_card_repo
+├── .env
+├── .gitignore
+├── LICENSE
+├── README.md
+├── data
+│   ├── pokemon-tcg-data
+│   ├── pokemon_tcg.db
+│   ├── pokemon_tcg.db-shm
+│   ├── pokemon_tcg.db-wal
+│   └── schema.sql
+├── requirements.txt
+└── src
+    ├── config.py
+    ├── db_ops_components
+    │   ├── __init__.py
+    │   ├── check_card_data.py
+    │   ├── check_set_data.py
+    │   ├── check_table_counts.py
+    │   ├── check_tables.py
+    │   ├── create_tables.py
+    │   ├── database_pool.py
+    │   ├── execute_insert.py
+    │   ├── execute_query.py
+    │   ├── execute_query_with_retry.py
+    │   ├── execute_schema.py
+    │   ├── execute_script_with_retry.py
+    │   ├── generate_insert_statement.py
+    │   ├── get_db_connection.py
+    │   ├── insert_card_data_batch.py
+    │   ├── insert_set_data_batch.py
+    │   ├── parse_schema.py
+    │   ├── prepare_row_data.py
+    │   ├── process_card_file.py
+    │   └── query_data.py
+    ├── main.py
+    ├── populate_db.py
+    ├── update_repo.py
+    └── utils
+        └── custom_logging
+            ├── __init__.py
+            ├── constants.py
+            ├── decorators.py
+            ├── handlers.py
+            ├── overview.md
+            └── setup_logging.py
+
+Script last modified: 2024-09-24 20:28:48
+~~~~
+# src/main.py
+import sys
+from utils.custom_logging import setup_logging, logger
+from config import Config
+
+# Set up logging first
+setup_logging()
+
+# Print configuration
+Config.print_config()
+
+# Now import other modules
+from update_repo import main as update_repo  # noqa: E402
+from db_ops_components.create_tables import create_tables  # noqa: E402
+from populate_db import load_data  # noqa: E402
+from db_ops_components.query_data import query_data  # noqa: E402
+
+def main():
+    try:
+        logger.info("Application starting...")
+        
+        logger.info("Updating repository...")
+        update_repo()
+
+        logger.info("Updating database schema...")
+        create_tables()
+        
+        logger.info("Populating database...")
+        load_data()
+        
+        logger.info("Validating database...")
+        query_data()
+        
+        logger.info("Process completed successfully.")
+    except Exception as e:
+        logger.error(f"An error occurred: {str(e)}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+~~~
+import os
+from dotenv import load_dotenv
+from pathlib import Path
+
+# Load environment variables from .env file
+load_dotenv()
+
+class Config:
+    # Root Folder
+    PROJECT_ROOT = os.getenv('PROJECT_ROOT')
+
+    # Application Entrypoint
+    ENTRY_POINT = os.getenv('ENTRY_POINT')
+
+    # Database
+    DB_PATH = os.getenv('DB_PATH')
+    SCHEMA_PATH = os.getenv('SCHEMA_PATH')
+
+    # GitHub Repository
+    REPO_PATH = os.getenv('REPO_PATH')
+
+    # Data directories
+    CARDS_DATA_DIR = os.getenv('CARDS_DATA_DIR')
+    SETS_DATA_PATH = os.getenv('SETS_DATA_PATH')
+
+    # Logging
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+    LOG_FILE = os.getenv('LOG_FILE', 'app.log')
+
+    # Test sets
+    TEST_SETS = {'base3', 'sm5', 'sv3', 'swsh7', 'xy6'}
+
+    @classmethod
+    def validate(cls):
+        """Validate that all required configuration variables are set and paths exist."""
+        required_vars = [
+            'PROJECT_ROOT', 'ENTRY_POINT', 'DB_PATH', 'SCHEMA_PATH',
+            'REPO_PATH', 'CARDS_DATA_DIR', 'SETS_DATA_PATH'
+        ]
+        for var in required_vars:
+            value = getattr(cls, var)
+            if value is None:
+                raise ValueError(f"Missing required configuration: {var}")
+            
+            # Normalize path and check if it exists (except for DB_PATH which might not exist yet)
+            if var != 'DB_PATH':
+                path = Path(value).resolve()
+                if not path.exists():
+                    raise ValueError(f"Path does not exist for {var}: {path}")
+                setattr(cls, var, str(path))
+
+        # Ensure DB_PATH directory exists
+        db_dir = Path(cls.DB_PATH).parent
+        db_dir.mkdir(parents=True, exist_ok=True)
+
+    @classmethod
+    def print_config(cls):
+        """Print the current configuration."""
+        for attr in dir(cls):
+            if not attr.startswith("__") and not callable(getattr(cls, attr)):
+                print(f"{attr}: {getattr(cls, attr)}")
+
+# Validate configuration on import
+Config.validate()
+~~~
+# src/populate_db.py
+import os
+import json
+import sqlite3
+from tqdm import tqdm
+from config import Config
+from utils.custom_logging import logger, error_handler
+from db_ops_components.execute_schema import execute_schema
+from db_ops_components.process_card_file import process_card_file
+from db_ops_components.insert_set_data_batch import insert_set_data_batch
+from db_ops_components.parse_schema import parse_schema
+from db_ops_components.execute_script_with_retry import execute_script_with_retry
+
+SET_ID_TO_FILENAME = {
+    'base3': 'base3.json',
+    'sm5': 'sm5.json',
+    'sv3': 'sv3.json',
+    'swsh7': 'swsh7.json',
+    'xy6': 'xy6.json'
+}
+
+def load_sets_data(cursor, schema):
+    logger.info("Loading set data...")
+    with open(Config.SETS_DATA_PATH) as f:
+        sets = json.load(f)
+        test_sets = [card_set for card_set in sets if card_set['id'] in Config.TEST_SETS]
+        insert_set_data_batch(cursor, test_sets, schema)
+
+@error_handler
+def load_data() -> None:
+    """Load data into the database."""
+    logger.info("Starting data load process...")
+
+    schema = parse_schema(Config.SCHEMA_PATH)
+
+    with sqlite3.connect(Config.DB_PATH, timeout=60) as conn:  # Increase timeout to 60 seconds
+        cursor = conn.cursor()
+        try:
+            pragmas = '''
+                PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA cache_size = 1000000;
+                PRAGMA locking_mode = EXCLUSIVE;
+                PRAGMA temp_store = MEMORY;
+            '''
+            execute_script_with_retry(cursor, pragmas)
+
+            execute_schema(cursor)
+            load_sets_data(cursor, schema)
+
+            logger.info("Loading card data...")
+            test_files = [SET_ID_TO_FILENAME[set_id] for set_id in Config.TEST_SETS]
+            with tqdm(total=len(test_files), desc="Processing card files") as pbar:
+                for filename in test_files:
+                    file_path = os.path.join(Config.CARDS_DATA_DIR, filename)
+                    if os.path.exists(file_path):
+                        process_card_file(cursor, file_path, schema)
+                    else:
+                        logger.warning(f"File not found: {file_path}")
+                    pbar.update(1)
+
+            conn.commit()
+            logger.info("Data load completed successfully.")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error during data load: {str(e)}", exc_info=True)
+            raise
+~~~
+# src/update_repo.py
+import os
+import subprocess
+from config import Config
+from utils.custom_logging import logger
+from typing import List, Optional
+
+def run_command(command: List[str]) -> Optional[str]:
+    try:
+        result = subprocess.run(command, check=True, text=True, capture_output=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Command failed: {e}")
+        logger.error(f"Error output: {e.stderr}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error running command: {e}")
+        return None
+
+def update_repo(repo_path: str) -> bool:
+    """Check for updates and pull changes if available."""
+    os.chdir(repo_path)
+
+    # Fetch the latest changes
+    if run_command(["git", "fetch"]) is None:
+        return False
+
+    # Check if we're behind the remote
+    status = run_command(["git", "status", "-uno"])
+    if status is None:
+        return False
+
+    if "Your branch is behind" in status:
+        logger.info("Updates available. Pulling changes...")
+        if run_command(["git", "pull"]) is None:
+            return False
+        logger.info("Repository updated successfully.")
+    else:
+        logger.info("Repository is up to date.")
+
+    return True
+
+def main() -> None:
+    if not os.path.exists(Config.REPO_PATH):  # Changed from repo_path to REPO_PATH
+        logger.error(f"Repository path does not exist: {Config.REPO_PATH}")
+        return
+
+    if update_repo(Config.REPO_PATH):  # Changed from repo_path to REPO_PATH
+        logger.info("Repository check completed successfully.")
+    else:
+        logger.error("Failed to update repository.")
+
+if __name__ == "__main__":
+    main()
+~~~
+# src/validate_db.py
+import sqlite3
+from utils.custom_logging import logger, error_handler
+from .execute_query import execute_query
+
+@error_handler
+def check_card_data(cursor: sqlite3.Cursor, card_id: str) -> None:
+    """Check related tables for a specific card."""
+    tables = [
+        'card_subtypes', 'card_types', 'card_evolves_to',
+        'card_rules', 'card_ancient_traits', 'card_abilities',
+        'card_attacks', 'card_weaknesses',
+        'card_resistances', 'card_retreat_cost',
+        'card_national_pokedex_numbers',
+        'card_legalities', 'card_images',
+        'card_tcgplayer', 'card_cardmarket'
+    ]
+
+    for table in tables:
+        related_data = execute_query(cursor, f'SELECT * FROM {table} WHERE card_id = ?', (card_id,))
+        logger.info(f"{table} for card {card_id}:")
+        for row in related_data:
+            logger.info(row)
+~~~
+# src/db_ops_components/check_set_data.py 
+from utils.custom_logging import logger, error_handler
+from db_ops_components.execute_query import execute_query
+
+@error_handler
+def check_set_data(cursor, set_id):
+    """Check related tables for a specific set."""
+    set_tables = ['set_legalities', 'set_images']
+
+    for table in set_tables:
+        related_data = execute_query(cursor, f'SELECT * FROM {table} WHERE set_id = ?', (set_id,))
+        logger.info(f"{table} for set {set_id}:")
+        for row in related_data:
+            logger.info(row)
+~~~
+# src/db_ops_components/check_table_counts.py
+
+import sqlite3
+from utils.custom_logging import logger, error_handler
+from db_ops_components.execute_query import execute_query
+
+@error_handler
+def check_table_counts(cursor: sqlite3.Cursor) -> None:
+    """Check row counts for all tables."""
+    all_tables = [
+        'cards', 'card_sets', 'card_subtypes', 'card_types',
+        'card_evolves_to', 'card_rules', 'card_ancient_traits',
+        'card_abilities', 'card_attacks', 'card_weaknesses',
+        'card_resistances', 'card_retreat_cost',
+        'card_national_pokedex_numbers', 'card_legalities',
+        'card_images', 'card_tcgplayer', 'card_cardmarket',
+        'set_legalities', 'set_images'
+    ]
+
+    for table in all_tables:
+        count = execute_query(cursor, f'SELECT COUNT(*) FROM {table}')[0][0]
+        logger.info(f"{table}: {count} rows")
+~~~
+# src/db_operations.py
+
+import sqlite3
+from utils.custom_logging import logger, error_handler
+
+@error_handler
+def check_tables(cursor: sqlite3.Cursor) -> None:
+    """Check if all tables have been created correctly."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = cursor.fetchall()
+    table_names = [table[0] for table in tables]
+    logger.info(f"Existing tables: {', '.join(table_names)}")
+~~~
+# src/db_ops_components/create_tables.py
+
+from utils.custom_logging import logger, error_handler
+from .get_db_connection import get_db_connection
+from .execute_schema import execute_schema
+
+@error_handler
+def create_tables() -> None:
+    """Create the database and tables using the schema.sql file if they don't exist."""
+    logger.info("Updating database schema...")
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        execute_schema(cursor)
+
+    logger.info("Database schema update completed.")
+~~~
+import sqlite3
+from contextlib import contextmanager
+from config import Config
+
+class DatabasePool:
+    def __init__(self, db_path, max_connections=5):
+        self.db_path = db_path
+        self.max_connections = max_connections
+        self.connections = []
+
+    @contextmanager
+    def get_connection(self):
+        if self.connections:
+            connection = self.connections.pop()
+        else:
+            connection = sqlite3.connect(self.db_path)
+        try:
+            yield connection
+        finally:
+            if len(self.connections) < self.max_connections:
+                self.connections.append(connection)
+            else:
+                connection.close()
+
+# Usage
+db_pool = DatabasePool(Config.DB_PATH)
+
+with db_pool.get_connection() as conn:
+    cursor = conn.cursor()
+    # Perform database operations
+~~~
+# src/db_ops_components/execute_insert.py
+import sqlite3
+from typing import List
+from utils.custom_logging import logger
+
+def execute_insert(cursor: sqlite3.Cursor, insert_statement: str, data: List[tuple], table: str) -> None:
+    try:
+        cursor.executemany(insert_statement, data)
+    except sqlite3.Error as e:
+        logger.error(f"Error inserting data into {table}: {e}")
+        logger.debug(f"Insert statement: {insert_statement}")
+        logger.debug(f"First row of data: {data[0] if data else 'No data'}")
+        raise
+~~~
+import time
+import sqlite3
+
+def execute_query_with_retry(cursor, query, params=None, max_attempts=10, delay=10):
+    for attempt in range(max_attempts):
+        try:
+            return cursor.execute(query, params)
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                time.sleep(delay)
+            else:
+                raise
+~~~
+# src/db_ops_components/execute_query.py
+import sqlite3
+from utils.custom_logging import error_handler
+from db_ops_components.execute_query_with_retry import execute_query_with_retry
+
+
+@error_handler
+def execute_query(cursor, query, params=None):
+    try:
+        """Execute a SQL query and return the results."""
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        return cursor.fetchall()
+    except sqlite3.OperationalError as e:
+        if "database is locked" in str(e):
+            # Retry the query after a short delay
+            return execute_query_with_retry(cursor, query, params=params)
+        else:
+            raise
+~~~
+# src/db_operations.py
+
+import sqlite3
+from config import Config
+from utils.custom_logging import error_handler, logger
+
+@error_handler
+def execute_schema(cursor: sqlite3.Cursor) -> None:
+    """Execute the SQL schema, silently skipping statements for tables that already exist."""
+    with open(Config.SCHEMA_PATH, 'r') as schema_file:
+        schema_script = schema_file.read()
+
+    # Split the script into individual SQL statements
+    statements = schema_script.split(';')
+
+    for statement in statements:
+        if statement := statement.strip():
+            try:
+                cursor.execute(statement)
+            except sqlite3.OperationalError as e:
+                if "already exists" not in str(e):
+                    logger.error(f"Error executing schema statement: {e}")
+                    raise
+
+    logger.info("Schema execution completed.")
+~~~
+# src/db_ops_components/execute_script_with_retry.py
+import time
+import sqlite3
+
+def execute_script_with_retry(cursor, script, max_attempts=5, delay=1):
+    for attempt in range(max_attempts):
+        try:
+            cursor.executescript(script)
+            return
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e) and attempt < max_attempts - 1:
+                time.sleep(delay)
+            else:
+                raise
+~~~
+# src/db_ops_components/generate_insert_statement.py
+from .parse_schema import parse_schema
+from config import Config
+
+def generate_insert_statement(table_name, columns):
+    placeholders = ', '.join(['?' for _ in columns])
+    return f"INSERT OR REPLACE INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
+
+schema = parse_schema(Config.SCHEMA_PATH)
+for table, columns in schema.items():
+    insert_statement = generate_insert_statement(table, columns)
+    # Use this insert_statement in your insert functions
+~~~
+# src/db_ops_components/get_db_connection.py
+
+import sqlite3
+from config import Config
+from utils.custom_logging import error_handler
+
+@error_handler
+def get_db_connection(timeout=60, isolation_level=None) -> sqlite3.Connection:
+    """Create and return a database connection with improved settings to handle concurrency."""
+    conn = sqlite3.connect(Config.DB_PATH, timeout=timeout, isolation_level=isolation_level)
+    
+    # Enable WAL mode for better concurrency
+    conn.execute('PRAGMA journal_mode=WAL')
+    
+    # Set a larger cache size for better performance
+    conn.execute('PRAGMA cache_size=-10000')  # 10MB cache
+    
+    # Disable synchronous writes for better performance (use with caution)
+    conn.execute('PRAGMA synchronous=NORMAL')
+    
+    return conn
+~~~
+# src/db_ops_components/insert_card_data_batch.py
+import sqlite3
+from typing import List, Dict, Any
+from .generate_insert_statement import generate_insert_statement
+from .prepare_row_data import prepare_row_data
+from .execute_insert import execute_insert
+
+def insert_card_data_batch(cursor: sqlite3.Cursor, cards: List[Dict[str, Any]], schema: Dict[str, List[str]]) -> None:
+    for table, columns in schema.items():
+        if not table.startswith('card_'):
+            continue
+        
+        insert_statement = generate_insert_statement(table, columns)
+        data = [prepare_row_data(card, columns) for card in cards]
+        execute_insert(cursor, insert_statement, data, table)
+~~~
+# src/db_ops_components/insert_set_data_batch.py
+import sqlite3
+from typing import List, Dict, Any
+from .generate_insert_statement import generate_insert_statement
+
+def insert_set_data_batch(cursor: sqlite3.Cursor, card_sets: List[Dict[str, Any]], schema: Dict[str, List[str]]) -> None:
+    for table, columns in schema.items():
+        if table.startswith('set_') or table == 'card_sets':
+            insert_statement = generate_insert_statement(table, columns)
+            data = [
+                [card_set.get(col, '') for col in columns]
+                for card_set in card_sets
+            ]
+            cursor.executemany(insert_statement, data)
+~~~
+def parse_schema(schema_path):
+    with open(schema_path, 'r') as f:
+        schema = f.read()
+    
+    tables = {}
+    current_table = None
+    for line in schema.split('\n'):
+        if line.strip().startswith('CREATE TABLE'):
+            current_table = line.split('(')[0].split()[-1]
+            tables[current_table] = []
+        elif current_table and line.strip().startswith(')'):
+            current_table = None
+        elif current_table:
+            column = line.strip().split()[0]
+            if column not in ['PRIMARY', 'FOREIGN']:
+                tables[current_table].append(column)
+    
+    return tables
+~~~
+# src/db_ops_components/prepare_row_data.py
+from typing import List, Dict, Any
+
+def prepare_row_data(card: Dict[str, Any], columns: List[str]) -> tuple:
+    row = []
+    for col in columns:
+        value = card.get(col, '')
+        if isinstance(value, list):
+            value = ','.join(map(str, value))
+        row.append(value)
+    return tuple(row)
+~~~
+# src/db_ops_components/process_card_file.py
+import os
+import json
+import sqlite3
+import time
+from .insert_card_data_batch import insert_card_data_batch
+from utils.custom_logging import logger
+from config import Config
+
+def process_card_file(cursor, file_path, schema):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            cards = json.load(f)
+            logger.debug(f"Sample card data from {os.path.basename(file_path)}: {json.dumps(cards[0], indent=2)}")
+            if test_cards := [
+                card
+                for card in cards
+                if isinstance(card, dict)
+                and any(set_id in card.get('id', '') for set_id in Config.TEST_SETS)
+            ]:
+                for _ in range(5):  # Retry up to 5 times
+                    try:
+                        insert_card_data_batch(cursor, test_cards, schema)
+                        break
+                    except sqlite3.OperationalError as e:
+                        if "database is locked" in str(e):
+                            time.sleep(1)
+                        else:
+                            raise
+            else:
+                logger.warning(f"No valid cards found in {os.path.basename(file_path)}.")
+    except UnicodeDecodeError as e:
+        logger.error(f"Error decoding {os.path.basename(file_path)}: {str(e)}")
+    except json.JSONDecodeError as e:
+        logger.error(f"Error parsing JSON in {os.path.basename(file_path)}: {str(e)}")
+
+~~~
+# src/db_ops_components/query_data.py
+
+import sqlite3
+from config import Config
+from utils.custom_logging import logger, error_handler
+from db_ops_components.execute_query import execute_query
+from db_ops_components.check_card_data import check_card_data
+from db_ops_components.check_set_data import check_set_data
+from db_ops_components.check_table_counts import check_table_counts
+from tqdm import tqdm
+
+@error_handler
+def query_data():
+    """Validate the database by querying sample data and checking table contents."""
+    logger.info("Starting database validation...")
+
+    with sqlite3.connect(Config.DB_PATH) as conn:
+        cursor = conn.cursor()
+
+        # Define the total number of steps
+        total_steps = 11  # 5 for cards, 5 for sets, 1 for table counts
+
+        with tqdm(total=total_steps, desc="Validating database") as pbar:
+            # Check sample cards
+            cards = execute_query(cursor, 'SELECT * FROM cards LIMIT 5')
+            logger.info("Sample Cards:")
+            for card in cards:
+                logger.info(card)
+                check_card_data(cursor, card[0])
+                pbar.update(1)
+
+            # Check sample card sets
+            sets = execute_query(cursor, 'SELECT * FROM card_sets LIMIT 5')
+            logger.info("Sample Card Sets:")
+            for card_set in sets:
+                logger.info(card_set)
+                check_set_data(cursor, card_set[0])
+                pbar.update(1)
+
+            # Check table row counts
+            check_table_counts(cursor)
+            pbar.update(1)
+
+    logger.info("Database validation completed.")
+~~~
+-- Tables
+-- This table structure mirrors the https://docs.pokemontcg.io/ API's card set representation
+
+-- The 'cards' table represents individual Pokemon cards https://docs.pokemontcg.io/api-reference/cards/card-object.
+CREATE TABLE cards (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT,
+    supertype TEXT,
+    hp TEXT,
+    evolvesFrom TEXT,
+    artist TEXT,
+    rarity TEXT,
+    flavorText TEXT,
+    number TEXT,
+    set_id TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (set_id) REFERENCES card_sets(id)
+);
+
+-- The 'card_sets' table represents sets of Pokemon cards https://docs.pokemontcg.io/api-reference/sets/set-object.
+CREATE TABLE card_sets (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT,
+    series TEXT,
+    printedTotal INTEGER,
+    total INTEGER,
+    ptcgoCode TEXT,
+    releaseDate TEXT,
+    updatedAt TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE TABLE card_subtypes (
+    card_id TEXT,
+    subtype TEXT,
+    PRIMARY KEY (card_id, subtype),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_types (
+    card_id TEXT,
+    type TEXT,
+    PRIMARY KEY (card_id, type),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_evolves_to (
+    card_id TEXT,
+    evolvesTo TEXT,
+    PRIMARY KEY (card_id, evolvesTo),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_rules (
+    card_id TEXT,
+    rule TEXT,
+    PRIMARY KEY (card_id, rule),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_ancient_traits (
+        card_id TEXT,
+        name TEXT,
+        text TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_abilities (
+        card_id TEXT,
+        name TEXT,
+        text TEXT,
+        type TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_attacks (
+        card_id TEXT,
+        name TEXT,
+        cost TEXT,
+        convertedEnergyCost INTEGER,
+        damage TEXT,
+        text TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_weaknesses (
+    card_id TEXT,
+    type TEXT,
+    value TEXT,
+    PRIMARY KEY (card_id, type),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_resistances (
+    card_id TEXT,
+    type TEXT,
+    value TEXT,
+    PRIMARY KEY (card_id, type),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_retreat_cost (
+    card_id TEXT,
+    cost TEXT,
+    PRIMARY KEY (card_id, cost),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_national_pokedex_numbers (
+    card_id TEXT,
+    number INTEGER,
+    PRIMARY KEY (card_id, number),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_legalities (
+        card_id TEXT,
+        standard TEXT,
+        expanded TEXT,
+        unlimited TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_images (
+        card_id TEXT,
+        small TEXT,
+        large TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_tcgplayer (
+    card_id TEXT,
+    url TEXT,
+    updatedAt TEXT,
+    prices JSON,
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_cardmarket (
+    card_id TEXT,
+    url TEXT,
+    updatedAt TEXT,
+    prices JSON,
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE set_legalities (
+        set_id TEXT,
+        standard TEXT,
+        expanded TEXT,
+        unlimited TEXT,
+        FOREIGN KEY (set_id) REFERENCES card_sets(id)
+    );
+
+CREATE TABLE set_images (
+        set_id TEXT,
+        symbol TEXT,
+        logo TEXT,
+        FOREIGN KEY (set_id) REFERENCES card_sets(id)
+    );
+
+-- Indexes
+CREATE INDEX idx_cards_name ON cards(name);
+CREATE INDEX idx_cards_set_id ON cards(set_id);
+CREATE INDEX idx_card_sets_name ON card_sets(name);
+CREATE INDEX idx_card_types_type ON card_types(type);
+CREATE INDEX idx_card_sets_series ON card_sets(series);
+
+-- Views
+

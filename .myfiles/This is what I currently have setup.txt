@@ -1,0 +1,289 @@
+This is what I currently have setup:
+Json files are downloaded from a github repo to data\pokemon-tcg-data
+With this code:
+
+'''
+# src\update_repo.py
+import os
+import subprocess
+from config import Config
+from utils.custom_logging import logger
+from typing import List, Optional
+
+def run_command(command: List[str]) -> Optional[str]:
+    try:
+        result = subprocess.run(command, check=True, text=True, capture_output=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        logger.error(f'Command failed: {e}')
+        logger.error(f'Error output: {e.stderr}')
+    except Exception as e:
+        logger.error(f'Unexpected error running command: {e}')
+
+def update_repo(repo_path: str) -> bool:
+    """Check for updates and pull changes if available."""
+    os.chdir(repo_path)
+    if run_command(['git', 'fetch']) is None:
+        return False
+    status = run_command(['git', 'status', '-uno'])
+    if status is None:
+        return False
+    if 'Your branch is behind' in status:
+        logger.info('Updates available. Pulling changes...')
+        if run_command(['git', 'pull']) is None:
+            return False
+        logger.info('Repository updated successfully.')
+        return True
+    logger.info('Repository is up to date.')
+    return True
+
+def main() -> None:
+    if not os.path.exists(Config.REPO_PATH):
+        logger.error(f'Repository path does not exist: {Config.REPO_PATH}')
+    elif update_repo(Config.REPO_PATH):
+        logger.info('Repository check completed successfully.')
+    else:
+        logger.error('Failed to update repository.')
+if __name__ == '__main__':
+    main()
+'''
+There is a db (data\pokemon_tcg.db) with the following schema(data\schema.sql):
+
+-- Tables
+-- This table structure mirrors the https://docs.pokemontcg.io/ API's card set representation
+
+-- The 'cards' table represents individual Pokemon cards https://docs.pokemontcg.io/api-reference/cards/card-object.
+CREATE TABLE cards (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT,
+    supertype TEXT,
+    hp TEXT,
+    evolvesFrom TEXT,
+    artist TEXT,
+    rarity TEXT,
+    flavorText TEXT,
+    number TEXT,
+    set_id TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    FOREIGN KEY (set_id) REFERENCES card_sets(id)
+);
+
+-- The 'card_sets' table represents sets of Pokemon cards https://docs.pokemontcg.io/api-reference/sets/set-object.
+CREATE TABLE card_sets (
+    id TEXT PRIMARY KEY NOT NULL,
+    name TEXT,
+    series TEXT,
+    printedTotal INTEGER,
+    total INTEGER,
+    ptcgoCode TEXT,
+    releaseDate TEXT,
+    updatedAt TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE TABLE card_subtypes (
+    card_id TEXT,
+    subtype TEXT,
+    PRIMARY KEY (card_id, subtype),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_types (
+    card_id TEXT,
+    type TEXT,
+    PRIMARY KEY (card_id, type),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_evolves_to (
+    card_id TEXT,
+    evolvesTo TEXT,
+    PRIMARY KEY (card_id, evolvesTo),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_rules (
+    card_id TEXT,
+    rule TEXT,
+    PRIMARY KEY (card_id, rule),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_ancient_traits (
+        card_id TEXT,
+        name TEXT,
+        text TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_abilities (
+        card_id TEXT,
+        name TEXT,
+        text TEXT,
+        type TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_attacks (
+        card_id TEXT,
+        name TEXT,
+        cost TEXT,
+        convertedEnergyCost INTEGER,
+        damage TEXT,
+        text TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_weaknesses (
+    card_id TEXT,
+    type TEXT,
+    value TEXT,
+    PRIMARY KEY (card_id, type),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_resistances (
+    card_id TEXT,
+    type TEXT,
+    value TEXT,
+    PRIMARY KEY (card_id, type),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_retreat_cost (
+    card_id TEXT,
+    cost TEXT,
+    PRIMARY KEY (card_id, cost),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_national_pokedex_numbers (
+    card_id TEXT,
+    number INTEGER,
+    PRIMARY KEY (card_id, number),
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_legalities (
+        card_id TEXT,
+        standard TEXT,
+        expanded TEXT,
+        unlimited TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_images (
+        card_id TEXT,
+        small TEXT,
+        large TEXT,
+        FOREIGN KEY (card_id) REFERENCES cards(id)
+    );
+
+CREATE TABLE card_tcgplayer (
+    card_id TEXT,
+    url TEXT,
+    updatedAt TEXT,
+    prices JSON,
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE card_cardmarket (
+    card_id TEXT,
+    url TEXT,
+    updatedAt TEXT,
+    prices JSON,
+    FOREIGN KEY (card_id) REFERENCES cards(id)
+);
+
+CREATE TABLE set_legalities (
+        set_id TEXT,
+        standard TEXT,
+        expanded TEXT,
+        unlimited TEXT,
+        FOREIGN KEY (set_id) REFERENCES card_sets(id)
+    );
+
+CREATE TABLE set_images (
+        set_id TEXT,
+        symbol TEXT,
+        logo TEXT,
+        FOREIGN KEY (set_id) REFERENCES card_sets(id)
+    );
+
+-- Indexes
+CREATE INDEX idx_cards_name ON cards(name);
+CREATE INDEX idx_cards_set_id ON cards(set_id);
+CREATE INDEX idx_card_sets_name ON card_sets(name);
+CREATE INDEX idx_card_types_type ON card_types(type);
+CREATE INDEX idx_card_sets_series ON card_sets(series);
+
+-- Views
+
+~~~
+Here's the folder structure:
+m:\dev_env\pokemon_tcg_card_repo
+├── .env
+├── .gitignore
+├── LICENSE
+├── README.md
+├── data
+│   ├── pokemon-tcg-data
+│   │   ├── ..gitmodules.swp
+│   │   ├── .editorconfig
+│   │   ├── .gitignore
+│   │   ├── README.md
+│   │   ├── cards
+│   │   │   └── en
+│   │   │       ├── base1.json
+│   │   │       ├── base2.json
+│   │   │       ├── base3.json
+│   │   │       ├── ...
+│   │   ├── decks
+│   │   │   └── en
+│   │   │       ├── base1.json
+│   │   │       ├── base2.json
+│   │   │       ├── base3.json
+│   │   │       ├── ...
+│   │   ├── sets
+│   │   │   └── en.json
+│   │   └── v2_to_v1.rb
+│   ├── pokemon_tcg.db
+│   └── schema.sql
+├── docs
+│   └── code_resposibilities.md
+├── requirements.txt
+└── src
+    ├── config.py
+    ├── main.py
+    ├── update_repo.py
+    └── utils
+        └── custom_logging
+            ├── __init__.py
+            ├── constants.py
+            ├── decorators.py
+            ├── handlers.py
+            ├── overview.md
+            └── setup_logging.py
+
+Script last modified: 2024-09-26 18:17:26
+~~~
+This is the .env file:
+# .env
+
+# Root Folder
+PROJECT_ROOT="M:/dev_env/pokemon_tcg_card_repo"
+
+# Application Entrypoint
+ENTRY_POINT="M:/dev_env/pokemon_tcg_card_repo/src/main.py"
+
+# Database
+DB_PATH="M:/dev_env/pokemon_tcg_card_repo/data/pokemon_tcg.db"
+SCHEMA_PATH="M:/dev_env/pokemon_tcg_card_repo/data/schema.sql"
+
+# GitHub Repository
+REPO_PATH="M:/dev_env/pokemon_tcg_card_repo/data/pokemon-tcg-data"
+
+# Data directories
+CARDS_DATA_DIR="M:/dev_env/pokemon_tcg_card_repo/data/pokemon-tcg-data/cards/en"
+SETS_DATA_PATH="M:/dev_env/pokemon_tcg_card_repo/data/pokemon-tcg-data/sets/en.json"
+~~~~
