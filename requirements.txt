@@ -2,4 +2,4 @@ treelib
 rich
 python-dotenv
 tqdm
-ijson
+PyQt6

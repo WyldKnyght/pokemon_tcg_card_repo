@@ -51,3 +51,27 @@ class DetailedRichHandler(logging.Handler):
             self.console.print(message, highlight=True)
         except Exception:
             self.handleError(record)
+
+class ConditionalFileHandler(logging.Handler):
+    def __init__(self, filename, mode='a', encoding=None):
+        super().__init__()
+        self.filename = filename
+        self.mode = mode
+        self.encoding = encoding
+        self.should_log_to_file = False
+        self.buffer = []
+
+    def emit(self, record):
+        if self.should_log_to_file:
+            if not hasattr(self, 'file_handler'):
+                self.file_handler = logging.FileHandler(self.filename, self.mode, self.encoding)
+                self.file_handler.setFormatter(self.formatter)
+                for buffered_record in self.buffer:
+                    self.file_handler.emit(buffered_record)
+                self.buffer = []
+            self.file_handler.emit(record)
+        else:
+            self.buffer.append(record)
+
+    def enable_file_logging(self):
+        self.should_log_to_file = True
