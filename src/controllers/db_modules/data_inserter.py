@@ -19,7 +19,7 @@ class DataInserter:
         try:
             # First, insert the main card data
             self._insert_into_table('cards', self.schema['cards'], self._map_data('cards', self.schema['cards'], card))
-            
+
             # Then insert related data
             self._insert_card_related_data(card)
         except Exception as e:
@@ -30,7 +30,7 @@ class DataInserter:
         try:
             # First, insert the main card set data
             self._insert_into_table('card_sets', self.schema['card_sets'], self._map_data('card_sets', self.schema['card_sets'], card_set))
-            
+
             # Then insert related data
             self._insert_card_set_related_data(card_set)
         except Exception as e:
