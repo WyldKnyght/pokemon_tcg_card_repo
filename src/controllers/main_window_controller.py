@@ -6,11 +6,13 @@ class MainWindowController:
     def __init__(self, logger):
         self.logger = logger
 
-    def refresh_all_tabs(self, cards_tab, admin_tab):
+    @staticmethod
+    def refresh_all_tabs(cards_tab, admin_tab):
         cards_tab.refresh_data()
         admin_tab.refresh_data()
 
-    def confirm_exit(self):
+    @staticmethod
+    def confirm_exit():
         reply = QMessageBox.question(None, UISettings.EXIT_DIALOG_TITLE, 
                                         UISettings.EXIT_DIALOG_MESSAGE,
                                         QMessageBox.StandardButton.Yes | 

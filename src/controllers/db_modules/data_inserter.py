@@ -19,7 +19,7 @@ class DataInserter:
         try:
             # First, insert the main card data
             self._insert_into_table('cards', self.schema['cards'], self._map_data('cards', self.schema['cards'], card))
-            
+
             # Then insert related data
             self._insert_card_related_data(card)
         except Exception as e:
@@ -30,13 +30,14 @@ class DataInserter:
         try:
             # First, insert the main card set data
             self._insert_into_table('card_sets', self.schema['card_sets'], self._map_data('card_sets', self.schema['card_sets'], card_set))
-            
+
             # Then insert related data
             self._insert_card_set_related_data(card_set)
         except Exception as e:
             logger.error(f"Error inserting card set {card_set.get('id', 'Unknown')}: {str(e)}")
 
-    def _is_card_set_related_table(self, table_name: str) -> bool:
+    @staticmethod
+    def _is_card_set_related_table(table_name: str) -> bool:
         """Check if the table is related to card set data."""
         return table_name == 'card_sets' or table_name.startswith('set_')
 
@@ -54,7 +55,8 @@ class DataInserter:
         nested_data = data if json_key == data else data.get(json_key, {})
         return [self._get_column_value(table_name, col, nested_data, data) for col in columns]
 
-    def _get_column_value(self, table_name: str, column: str, nested_data: Any, full_data: Dict[str, Any]) -> Any:
+    @staticmethod
+    def _get_column_value(table_name: str, column: str, nested_data: Any, full_data: Dict[str, Any]) -> Any:
         """Get the value for a specific column in a table."""
         if table_name in {'cards', 'card_sets'}:
             if column == 'id':
@@ -64,11 +66,12 @@ class DataInserter:
 
         if isinstance(nested_data, dict):
             return nested_data.get(column)
-        elif isinstance(nested_data, list):
+        if isinstance(nested_data, list):
             return json.dumps(nested_data)
         return nested_data
 
-    def _get_json_key(self, table_name: str) -> str:
+    @staticmethod
+    def _get_json_key(table_name: str) -> str:
         """Get the JSON key based on the table name."""
         if table_name in {'cards', 'card_sets'}:
             return table_name
@@ -118,7 +121,8 @@ class DataInserter:
                 if any(value is not None for value in values):
                     self._insert_into_table(table_name, columns, values)
 
-    def _is_card_related_table(self, table_name: str) -> bool:
+    @staticmethod
+    def _is_card_related_table(table_name: str) -> bool:
         """Check if the table is related to card data."""
         return table_name == 'cards' or table_name.startswith('card_')
 
