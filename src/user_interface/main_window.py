@@ -20,7 +20,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         self.setWindowTitle(UISettings.WINDOW_TITLE)
         self.setGeometry(*UISettings.WINDOW_GEOMETRY)
-        
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)

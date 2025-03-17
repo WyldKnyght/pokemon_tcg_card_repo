@@ -21,7 +21,7 @@ def setup_file_logging():
 def get_update_logger():
     logger = logging.getLogger('update_logger')
     logger.setLevel(logging.INFO)
-    
+
     # Only add a console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
