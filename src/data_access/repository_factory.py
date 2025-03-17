@@ -19,5 +19,6 @@ class RepositoryFactory:
     def get_schema(self):
         return self.schema
 
-    def _load_schema(self):
+    @staticmethod
+    def _load_schema():
         return SchemaParser.parse_schema(EnvSettings.SCHEMA_PATH)
