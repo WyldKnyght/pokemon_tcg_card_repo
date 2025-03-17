@@ -16,9 +16,7 @@ class DatabaseManager:
         cursor (sqlite3.Cursor): Database cursor.
     """
     def __init__(self):
-        """
-        Initializes the database manager.
-        """
+        """Initializes the database manager."""
         self.conn = None
         self.cursor = None
         self.connection()
@@ -37,9 +35,7 @@ class DatabaseManager:
         return self.conn
 
     def close(self):
-        """
-        Closes the database connection if it exists.
-        """
+        """Closes the database connection if it exists."""
         if self.conn:
             self.conn.close()
             self.conn = None
@@ -116,16 +112,12 @@ class DatabaseManager:
         self.commit()  # Commit changes after setup
 
     def commit(self):
-        """
-        Commits the current transaction to the database.
-        """
+        """Commits the current transaction to the database."""
         if self.conn:
             self.conn.commit()
 
     def rollback(self):
-        """
-        Rolls back the current transaction to the database.
-        """
+        """Rolls back the current transaction to the database."""
         if self.conn:
             self.conn.rollback()
 
