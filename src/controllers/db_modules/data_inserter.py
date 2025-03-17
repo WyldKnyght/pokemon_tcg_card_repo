@@ -64,7 +64,7 @@ class DataInserter:
 
         if isinstance(nested_data, dict):
             return nested_data.get(column)
-        elif isinstance(nested_data, list):
+        if isinstance(nested_data, list):
             return json.dumps(nested_data)
         return nested_data
 
