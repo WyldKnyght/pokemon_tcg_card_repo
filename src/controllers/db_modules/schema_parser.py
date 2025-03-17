@@ -11,9 +11,8 @@ class SchemaParser:
         Returns:
             dict: A dictionary of tables and their columns.
         """
-        with contextlib.suppress(FileNotFoundError):
-            with open(schema_path, 'r') as f:
-                schema = f.read()
+        with contextlib.suppress(FileNotFoundError), open(schema_path, 'r') as f:
+            schema = f.read()
         tables = {}
         current_table = None
         for line in schema.split('\n'):
