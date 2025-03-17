@@ -1,6 +1,5 @@
 # src/utils/custom_logging/handlers.py
 import logging
-import logging.config
 from .constants import DETAILED_LOG_FORMAT, SIMPLE_LOG_FORMAT
 from rich.console import Console
 from rich.theme import Theme
