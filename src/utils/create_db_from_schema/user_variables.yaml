@@ -1,0 +1,13 @@
+# src/utils/create_db_from_schema/user_variables.yaml
+# Configuration file for the database creation script
+# ==============================================
+
+# Name of the SQLite database file
+DB_NAME: pokemon_tcg.db
+
+# Name of the SQL schema file
+SCHEMA_NAME: schema.sql
+
+# Path to the data directory containing JSON files
+DATA_DIR: data
+

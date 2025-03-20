@@ -1,5 +1,3 @@
 treelib
 rich
 python-dotenv
-tqdm
-PyQt6
